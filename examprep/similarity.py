@@ -12,6 +12,10 @@ Kopya sayılır:
   2. kosinüs ≥ 0.70 ve veri örtüşmesi ≥ 0.60             → aynı veri, yeniden ifade
   3. veri sembolü < 4 (kavramsal soru) ve kosinüs ≥ 0.85  → aynı kavramsal soru
 
+Ortak notasyon (N, k, x_k, g_i, ℕ, Σ, R[…] gibi dersin birçok sorusunda geçen semboller)
+veri sayılmaz: kaynak soruların en az NOTATION_DF'sinde geçen semboller örtüşme hesabından
+çıkarılır. Böylece kopyayı ortak notasyon değil, soruya özgü veri belirler.
+
 Kaynak soruların embedding'leri bir kez hesaplanıp SourceQuestion.embedding'e yazılır.
 Embedder değiştirilebilir (testlerde sahte embedder kullanılır, model indirilmez).
 """
@@ -85,6 +89,7 @@ MID_EMBEDDING = 0.70
 DATA_OVERLAP = 0.60
 CONCEPTUAL_TOKENS = 4
 CONCEPTUAL_EMBEDDING = 0.85
+NOTATION_DF = 0.15  # kaynak soruların bu oranından fazlasında geçen sembol = notasyon
 
 _DATA_TOKEN = re.compile(
     r"\d+|[A-Za-z]\d+|[A-Za-z]_\w+|\b(?:sin|cos|log|sqrt|exp|max|min)\b"
@@ -96,9 +101,20 @@ def data_tokens(text: str) -> Counter:
     return Counter(t.lower() for t in _DATA_TOKEN.findall(text))
 
 
-def data_overlap(generated: str, source: str) -> tuple[int, float]:
-    """(üretilen sorudaki veri sembolü sayısı, bunların kaynakta da bulunan oranı)."""
+def notation_tokens(texts: list[str], df: float = NOTATION_DF) -> set[str]:
+    """Metinlerin en az df oranında geçen semboller (dersin ortak notasyonu)."""
+    if not texts:
+        return set()
+    counts = Counter(t for text in texts for t in set(data_tokens(text)))
+    return {t for t, c in counts.items() if c / len(texts) >= df}
+
+
+def data_overlap(generated: str, source: str, notation: set[str] = frozenset()) -> tuple[int, float]:
+    """(üretilen sorudaki veri sembolü sayısı, bunların kaynakta da bulunan oranı); notasyon hariç."""
     g, s = data_tokens(generated), data_tokens(source)
+    for t in notation:
+        g.pop(t, None)
+        s.pop(t, None)
     n = sum(g.values())
     return n, (sum((g & s).values()) / n if n else 0.0)
 
@@ -127,12 +143,13 @@ def assess(session: Session, course_id: int, texts: list[str], embedder: Embedde
     if not sources:
         return [{"score": 0.0, "source_question_id": None, "ref": None, "overlap": 0.0, "data_tokens": 0,
                  "too_similar": False, "rule": None, "model": embedder.name, "threshold": high} for _ in texts]
+    notation = notation_tokens([q.text for q in sources])
     scores = _normalize(embedder.encode(texts)) @ matrix.T
     for text, row in zip(texts, scores):
         best, copy = None, None
         for i, q in enumerate(sources):
             cos = float(row[i])
-            n_tok, ov = data_overlap(text, q.text)
+            n_tok, ov = data_overlap(text, q.text, notation)
             rule = copy_rule(cos, n_tok, ov, high)
             cand = {"score": round(cos, 4), "source_question_id": q.id, "ref": f"{q.document_id}:{q.label}",
                     "overlap": round(ov, 3), "data_tokens": n_tok, "rule": rule}

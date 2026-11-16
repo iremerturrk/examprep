@@ -2,7 +2,7 @@
 
 Üniversite dersleri için kişisel sınav hazırlık sistemi.
 Girdi: slaytlar, ödevler, çıkmış sınavlar (PDF).
-Çıktı: Anki desteleri (.apkg) ve haftalık testler.
+Çıktı: şıklı kazanım testleri (çözülüp gönderilir) ve her teste ait kart destesi (uygulama içi + Anki .apkg).
 
 ## Mimari: API yok, motor Claude Code
 Uygulama hiçbir LLM API'si çağırmaz. Analiz ve soru üretimi Claude Code
@@ -27,12 +27,15 @@ eksenleri) üretilen yeni sorulardır: kalıp aynı, kombinasyon farklı.
 algoritmasını verilen dizide izle" olur; yeni soru quicksort veya heapsort ile
 farklı bir dizi üzerinde sorulabilir.
 Aynı konudan birden fazla soru gelebilir; bu pekiştirmeye yardım eder.
-Çıkmış sınav/ödev soruları da düşünme şeklini oturtmak için aynen sorulabilir;
-"Çıkmış soru" etiketiyle ve ayarlanabilir bir kotayla (varsayılan ~%20).
-Benzerlik filtresi yalnızca üretilen sorulara uygulanır (kopya üretilmez).
+Amaç konuyu öğrenmek: testler MEB kazanım testi tarzındadır (bkz. "Test formatı").
+Çıkmış sorular "sınav düzeyi" bölümünde paralel sorularla (aynı beceri ve yapı,
+yeni veri) temsil edilir; benzerlik filtresi kopya üretilmesini engeller.
 
 Kapsam ve çeşitlilik:
 - Slaytlardaki tüm kazanımlar, sınavda hiç çıkmamış olsalar da kapsanır.
+- Slaytlarda karşılığı olmayan çıkmış sınav/ödev soruları da havuzda kalır:
+  bunlar için "çıkmış sorulardan" kazanımlar (basis = past_questions) ayrı
+  konular altında oluşturulur; ilgili slaytlar gelince normal konulara taşınır.
 - Her kazanım en az 2 farklı açıdan kalıpla kapsanır (açılar: hesaplama,
   izleme, karşılaştırma, hata bulma, kenar durum, açıklama, tasarım);
   sınavda çıkmış kazanımlara da farklı açılar eklenir.
@@ -53,6 +56,21 @@ Course > Topic > LearningObjective > QuestionArchetype > GeneratedQuestion > Att
 Ayrıca: SourceDocument (type ∈ {slides, homework, exam}), SourceQuestion (çıkmış soru),
 DifficultyProfile (ders başına), Test > TestSlot (istek üzerine üretilen testler)
 
+## Test formatı (kazanım testi)
+- Her test 35 şıklı soru (varsayılan; bölüm boyutları ayarlanabilir):
+  Temel 1–20 (hatırlama/anlama, ~1 dk, olabildiğince çok farklı kazanım),
+  Orta 21–30 (uygulama/analiz, 2–4 dk),
+  Sınav düzeyi 31–35 (her biri belirli bir çıkmış soruya paralel).
+- Her soruda 4 şık (A–D), tam bir doğru şık; yanlış şıklar tipik hatalardan.
+- Dil: soru, şıklar ve kartın ön yüzü Almanca (sınav dili); açıklamalar ve
+  kartların arka yüzü Türkçe, terimler Almanca.
+- Test ekranında kazanım / kalıp / konu adı gösterilmez; kazanımlar yalnızca
+  test gönderildikten sonra sonuçta görünür.
+- Her testin kendi kartları vardır: testin ölçtüğü kazanımların kartları
+  (tanım, olgu, mini örnek, sık hata) testten önce tekrar edilir ve .apkg
+  olarak dışa aktarılabilir. Kartlar kazanıma bağlıdır, testler arasında
+  yeniden kullanılır.
+
 ## Test üretimi
 - Sabit haftalık plan yok: kullanıcı her istediğinde o ana kadar yüklenmiş tüm
   malzemeden yeni bir test üretilir (`test compose`). Kullanıcı her hafta yeni
@@ -65,7 +83,8 @@ DifficultyProfile (ders başına), Test > TestSlot (istek üzerine üretilen tes
 - QuestionArchetype.origin ∈ {exam, homework, web, model}
 - model: Claude, slayt içeriğinden her kazanım için eksik açıları türetir
 - web: opsiyonel; web sorusu kopyalanmaz, archetype'a soyutlanır, source_url saklanır
-- Kapsam kilidi: slayt kazanımlarına eşlenemeyen archetype atılır
+- Kapsam kilidi: archetype bir kazanıma bağlı olmalı; kazanım slayttan ya da
+  çıkmış sınav/ödev sorusundan gelir, web içeriği tek başına kazanım oluşturmaz
 - Benzer archetype'lar birleştirilir
 - Test üretiminde kaynak kotası (varsayılan ~%50 exam/homework kalıplarından)
 - Skill'ler kayıtları anahtarla (key) upsert eder; kullanıcının onayladığı
@@ -89,17 +108,21 @@ DifficultyProfile (ders başına), Test > TestSlot (istek üzerine üretilen tes
 ## Planlanan skill'ler
 - /ders-analiz: bir dersin PDF'lerini oku, konu ağacı, kazanımlar,
   soru kalıpları ve zorluk profilini çıkar, CLI ile kaydet
-- /hafta-testi: tüm haritadan kümülatif test üret (kota, hakem, doğrulama)
-- /anki-uret: kazanımlardan kart üret, .apkg export et
+- /kazanim-testi: tüm haritadan kümülatif şıklı test + kartlar üret
+  (doğrulama, benzerlik, hakem)
+- /web-kesif: başka üniversitelerin sınav/alıştırmalarından kalıp ilhamı
+  (kopyalanmaz, archetype'a soyutlanır, source_url saklanır)
 
 ## Aşamalar
 1. İskelet + veri modeli + CLI + PDF ingest + Streamlit yükleme ekranı
 2. /ders-analiz skill'i + Streamlit'te kazanım haritası onay ekranı
-3. /hafta-testi skill'i + benzerlik ve doğrulama komutları
-4. /anki-uret skill'i + Anki export
-5. Test çözme ekranı + zorluk geri bildirimi
-6. İlerleme takibi ve ağırlık güncelleme
+3. Test üretimi + benzerlik ve doğrulama komutları
+4. Kazanım testi formatı: şıklı test, kartlar + Anki export, test çözme ve
+   gönderme ekranı, zorluk geri bildirimi, çıkmış-soru kazanımları, /web-kesif
+5. İlerleme takibi ve ağırlık güncelleme
 
 ## Çalışma tarzı
 - Her aşamaya başlamadan önce plan sun, onay bekle
 - Her modül için pytest testleri yazılır
+- Arayüz üç dillidir (tr / de / en): yeni UI metinleri sayfalara gömülmez,
+  `examprep/i18n.py` içine üç dilde eklenir (tests/test_i18n.py bunu denetler)

@@ -408,3 +408,18 @@ def test_approve_topic_tree(session, seeded):
 
     assert analysis.approve_topic_tree(session, root.id) == 4  # 2 konu + 1 kazanım + 1 kalıp
     assert analysis.coverage(session, cid).unapproved_count == 2  # graf + graf.bfs
+
+
+def test_past_question_objectives_require_exam_or_homework_source(session, seeded):
+    cid = seeded["cid"]
+    analysis.import_topics(session, cid, topics([{"key": "sinav-disi", "name": "Çıkmış sorulardan"}]))
+    good = {"key": "sd.heap", "topic_key": "sinav-disi", "text": "Heap", "bloom_level": "apply",
+            "basis": "past_questions", "source_document_id": seeded["exam"]}
+    analysis.import_objectives(session, cid, objectives([good]))
+    assert session.query(LearningObjective).filter_by(key="sd.heap").one().basis.value == "past_questions"
+    with pytest.raises(AnalysisError) as exc:
+        analysis.import_objectives(session, cid, objectives([
+            {**good, "key": "x", "source_document_id": seeded["slides"]},
+            {**good, "key": "y", "basis": "slides"},
+        ]))
+    assert "sınav/ödev olmalı" in exc.value.details[0] and "basis=slides" in exc.value.details[1]

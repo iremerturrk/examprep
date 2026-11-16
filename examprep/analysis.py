@@ -19,6 +19,7 @@ from examprep.models import (
     DifficultyProfile,
     DocType,
     LearningObjective,
+    ObjectiveBasis,
     QuestionArchetype,
     SourceDocument,
     SourceQuestion,
@@ -135,14 +136,21 @@ def import_objectives(
     _require_course(session, course_id)
     _check_duplicates([i.key for i in items], "kazanım anahtarları")
     topics = _by_key(session, Topic, course_id)
-    doc_ids = set(session.scalars(select(SourceDocument.id).where(SourceDocument.course_id == course_id)))
+    docs = {d.id: d for d in session.scalars(select(SourceDocument).where(SourceDocument.course_id == course_id))}
 
     errors = []
     for n, item in enumerate(items):
         if item.topic_key not in topics:
             errors.append(f"[{n}] {item.key}: konu yok: {item.topic_key}")
-        if item.source_document_id is not None and item.source_document_id not in doc_ids:
+        doc = docs.get(item.source_document_id) if item.source_document_id is not None else None
+        if item.source_document_id is not None and doc is None:
             errors.append(f"[{n}] {item.key}: belge bu derse ait değil: {item.source_document_id}")
+        elif doc is not None:
+            from_slides = doc.doc_type is DocType.slides
+            if item.basis is ObjectiveBasis.slides and not from_slides:
+                errors.append(f"[{n}] {item.key}: basis=slides ama kaynak belge {doc.doc_type.value}")
+            if item.basis is ObjectiveBasis.past_questions and from_slides:
+                errors.append(f"[{n}] {item.key}: basis=past_questions kaynak belgesi sınav/ödev olmalı")
     if errors:
         raise AnalysisError("Kazanımlar içe aktarılamadı", errors)
 
@@ -165,6 +173,7 @@ def import_objectives(
         obj.topic = topics[item.topic_key]
         obj.text = item.text
         obj.bloom_level = item.bloom_level
+        obj.basis = item.basis
         obj.order = order
         obj.source_document_id = item.source_document_id
         obj.source_pages = list(item.source_pages)
@@ -399,6 +408,7 @@ def _objective_out(o: LearningObjective, with_text: bool) -> ObjectiveOut:
         key=o.key,
         text=o.text,
         bloom_level=o.bloom_level,
+        basis=o.basis,
         source_document_id=o.source_document_id,
         source_pages=o.source_pages,
         weight=o.weight,

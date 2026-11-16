@@ -1,33 +1,6 @@
-"""Streamlit sayfalarının ortak yardımcıları: Türkçe etiketler ve eksen metni biçimi."""
+"""Streamlit sayfalarının ortak yardımcıları: varyasyon ekseni metin biçimi. Etiketler: examprep.i18n."""
 
 from examprep.analysis import AnalysisError
-from examprep.models import Angle, ArchetypeOrigin, BloomLevel, DocType
-
-BLOOM_TR = {
-    BloomLevel.remember: "Hatırlama",
-    BloomLevel.understand: "Anlama",
-    BloomLevel.apply: "Uygulama",
-    BloomLevel.analyze: "Analiz",
-    BloomLevel.evaluate: "Değerlendirme",
-    BloomLevel.create: "Yaratma",
-}
-ANGLE_TR = {
-    Angle.compute: "Hesaplama",
-    Angle.trace: "İzleme",
-    Angle.compare: "Karşılaştırma",
-    Angle.find_error: "Hata bulma",
-    Angle.edge_case: "Kenar durum",
-    Angle.explain: "Açıklama",
-    Angle.design: "Tasarım",
-}
-ORIGIN_TR = {
-    ArchetypeOrigin.exam: "Sınav",
-    ArchetypeOrigin.homework: "Ödev",
-    ArchetypeOrigin.web: "Web",
-    ArchetypeOrigin.model: "Model",
-}
-DOC_TR = {DocType.slides: "Slayt", DocType.homework: "Ödev", DocType.exam: "Sınav"}
-
 AXIS_SEP = "|"
 
 

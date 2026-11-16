@@ -25,9 +25,10 @@ soyutlar. Ağırlık, profil ve kapsam hesabını CLI yapar.
   aynı komutu tekrar çalıştır.
 - Kullanıcının onayladığı kayıtlar güncellenmez, `skipped_approved` içinde
   döner. Bu normaldir, zorlamaya çalışma.
-- **Kapsam kilidi:** yalnızca slaytlarda olan içerik kazanım olur. Kalıplar
-  ve varyasyon değerleri slayt içeriğinin dışına çıkmaz. Slaytta karşılığı
-  olmayan bir sınav sorusu kaydedilir ama kalıba bağlanmaz.
+- **Kapsam kilidi:** kazanımlar slaytlardan gelir (`basis: "slides"`).
+  Slaytta karşılığı olmayan sınav ya da ödev soruları için **çıkmış sorulardan
+  kazanım** oluşturulur (`basis: "past_questions"`, bkz. 4b). Kalıplar ve
+  varyasyon değerleri slayt ve çıkmış soru içeriğinin dışına çıkmaz.
 - Kaynak soruların metni yalnızca SourceQuestion'da saklanır. Kalıbın
   `skill` alanına soru metni, somut sayılar ya da diziler kopyalanmaz.
 
@@ -137,7 +138,7 @@ adım adım izler". Çok geniş ("sıralamayı bilir") ya da çok dar ("slayt 14
 Her kaynak soru için şunları yap:
 1. Sorunun ölçtüğü kazanımı bul. Hiçbir kazanıma uymuyorsa önce slaytlarda
    gözden kaçan bir içerik olup olmadığına bak. Gerçekten slayt dışıysa
-   **bağlama**. Soru eşlenmemiş kalır, bunu raporda belirt.
+   **4b'ye** bırak.
 2. Kalıbı çıkar:
    - `skill`: içerikten bağımsız, genelleştirilmiş beceri cümlesi.
      Örnek: "Karşılaştırma tabanlı bir sıralama algoritmasını verilen
@@ -172,6 +173,25 @@ açma. Mevcut kalıbı aynı anahtarla yeniden gönder ve yeni soruyu
 `source_questions` alanına ekle. Bu liste her gönderimde baştan yazılır,
 eski soruları da listede tut. İki mevcut kalıp sonradan aynı çıkarsa
 `ep archetype merge --course <id> --into <kalacak> --from <diğeri>` kullan.
+
+### 4b. Çıkmış sorulardan kazanımlar (`06b_past_objectives.json`)
+Hiçbir slayt kazanımına uymayan sınav ve ödev soruları havuzdan atılmaz, çünkü
+yine çıkabilirler.
+- **Konu:** `sinav-disi` adında bir kök konu ("Çıkmış sorulardan (slaytı henüz
+  yok)") ve altında alan bazında alt konular. Örnek: `sinav-disi.sortieren`,
+  `sinav-disi.datenstrukturen`. Konu ağacına ekleyip `topic import` çalıştır.
+- **Kazanım:** sorunun ölçtüğü beceri, normal kazanım gibi yazılır.
+  `"basis": "past_questions"` olur, `source_document_id` sınav ya da ödev
+  belgesidir, `source_pages` sorunun sayfasıdır. Aynı beceriyi ölçen sorular tek
+  kazanımda toplanır.
+- **Kalıp:** soruya bağlı kalıp normal 4. adımdaki gibi yazılır (`origin`:
+  exam/homework). Varyasyon değerleri yalnızca çıkmış soruların içeriğinden
+  seçilir. 5. adımdaki "en az 2 açı" kuralı bu kazanımlar için de geçerlidir.
+- **Taşıma:** ilgili slaytlar sonradan yüklenince kazanımı **aynı anahtarla**
+  normal konusuna taşı: `topic_key` ve `basis: "slides"` değişir, kaynak slayt
+  olur.
+- Eşlenmemiş soru ancak ders içeriğiyle gerçekten ilgisizse kalır (örneğin
+  kapak sayfası ya da genel mantık alıştırması); bunu raporda belirt.
 
 ### 5. Eksik açılar için model kalıpları (`05_model_archetypes.json`)
 Hedef: **her kazanım en az 2 farklı açıdan** kalıpla kapsansın. Buna sınavda

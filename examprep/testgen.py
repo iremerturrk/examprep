@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 
 from examprep.analysis import AnalysisError, _get_profile, _require_course
 from examprep.models import (
+    AnswerType,
     ArchetypeOrigin,
     Attempt,
     BloomLevel,
@@ -33,14 +34,17 @@ from examprep.models import (
     SlotType,
     SourceQuestion,
     Test,
+    TestFormat,
     TestSlot,
     TestStatus,
+    Tier,
 )
 from examprep.schemas import (
     AnchorOut,
     GeneratedQuestionIn,
     GeneratedQuestionOut,
     JudgeIn,
+    MeasuredObjectiveOut,
     SlotOut,
     TestOut,
 )
@@ -56,6 +60,7 @@ SOURCE_ORIGIN_RATIO = 0.5  # üretim slotlarında sınav/ödev kökenli kalıp h
 MAX_PER_OBJECTIVE = 2
 RECENT_PAST_TESTS = 3  # çıkmış soru, son bu kadar testte sorulduysa tekrar seçilmez
 MAX_ATTEMPTS_PER_SLOT = 3
+CHOICES = 4  # A–D
 DIFF_FIELDS = ("steps", "input_size", "concept_count", "est_minutes")
 
 
@@ -249,6 +254,132 @@ def compose_test(session: Session, course_id: int, size: int = 10, seed: int | N
     return test
 
 
+# --- Kazanım testi (şıklı, üç bölüm) ---
+
+DEFAULT_SECTIONS = {"basic": 20, "medium": 10, "exam": 5}
+EXAM_MIN_POINTS = 3
+BASIC_TARGET = {"steps": 1, "input_size": 0, "concept_count": 1, "est_minutes": 1.0, "bloom_level": 1.5,
+                "edge_cases": [], "source": "tier_basic", "tier": "basic"}
+
+
+def _medium_target(profile) -> dict:
+    base = {"steps": 3, "input_size": 4, "concept_count": 2, "est_minutes": 3.0, "bloom_level": 3.5}
+    if profile is not None:  # profilden daha düşük olmasın
+        base["steps"] = max(base["steps"], profile.steps or 0)
+        base["est_minutes"] = max(base["est_minutes"], profile.est_minutes or 0)
+    return {**base, "edge_cases": [], "source": "tier_medium", "tier": "medium"}
+
+
+def _topic_sort_key(obj: LearningObjective) -> tuple:
+    chain, t = [], obj.topic
+    while t is not None:
+        chain.append(t.order)
+        t = t.parent
+    return (*reversed(chain), obj.order, obj.id)
+
+
+def _sample_objectives(rng, pool: list[tuple], n: int, taken: Counter, cap: int) -> list[tuple]:
+    """Önceliğe göre ağırlıklı, tekrarsız seçim; havuz yetmezse cap'e kadar tekrar."""
+    chosen = []
+    for limit in range(1, cap + 1):
+        while len(chosen) < n:
+            avail = [x for x in pool if taken[x[0].id] < limit]
+            if not avail:
+                break
+            pick = _weighted_pick(rng, avail, [x[1] for x in avail])
+            taken[pick[0].id] += 1
+            chosen.append(pick)
+        if len(chosen) >= n:
+            break
+    return chosen
+
+
+def compose_kazanim_test(session: Session, course_id: int, sections: dict | None = None, seed: int | None = None,
+                         now: datetime | None = None, approved_only: bool = False) -> Test:
+    """Şıklı kazanım testi taslağı: Temel (geniş kapsam) → Orta → Sınav düzeyi (çıkmış soruya paralel)."""
+    _require_course(session, course_id)
+    sections = {**DEFAULT_SECTIONS, **(sections or {})}
+    if any(v < 0 for v in sections.values()) or not 1 <= sum(sections.values()) <= 80:
+        raise AnalysisError("Bölüm boyutları 0 ya da pozitif olmalı, toplam 1–80")
+    seed = seed if seed is not None else secrets.randbelow(2**31)
+    rng = random.Random(seed)
+    pri = objective_priorities(session, course_id, now, approved_only)
+    if not pri:
+        raise AnalysisError("Kalıbı olan kazanım yok; önce /ders-analiz çalıştırın")
+    profile = _get_profile(session, course_id)
+    usable = lambda a: a.approved or not approved_only  # noqa: E731
+
+    # Sınav düzeyi: kalıba bağlı, zorluk bilgisi olan sınav soruları; son testlerde paralel yapılmamış
+    recent = session.scalars(select(Test.id).where(Test.course_id == course_id, Test.status == TestStatus.ready)
+                             .order_by(Test.id.desc()).limit(RECENT_PAST_TESTS)).all()
+    recently_parallel = set(session.scalars(select(TestSlot.parallel_question_id).where(TestSlot.test_id.in_(recent))))
+    by_obj = {o.id: (o, p, new) for o, p, new in pri}
+    exam_cands, seen = [], set()
+    for o, p, _ in pri:
+        for a in o.archetypes:
+            if not usable(a):
+                continue
+            for q in a.source_questions:
+                if (q.id not in seen and q.id not in recently_parallel and q.document.doc_type is DocType.exam
+                        and q.difficulty):
+                    seen.add(q.id)
+                    exam_cands.append((q, o, a, p * max(q.points or 1, 1) ** 1.5))
+    # sınav düzeyi tipik sınav görevlerini temsil etsin: yeterince varsa ≥ EXAM_MIN_POINTS puanlılar
+    substantial = [c for c in exam_cands if (c[0].points or 0) >= EXAM_MIN_POINTS]
+    if len(substantial) >= sections["exam"]:
+        exam_cands = substantial
+    exam_slots = []
+    exam_taken: Counter = Counter()
+    while len(exam_slots) < sections["exam"] and exam_cands:
+        avail = [c for c in exam_cands if exam_taken[c[1].id] == 0] or exam_cands
+        q, o, a, w = _weighted_pick(rng, avail, [c[3] for c in avail])
+        exam_cands = [c for c in exam_cands if c[0].id != q.id]
+        exam_taken[o.id] += 1
+        archetype = next((x for x in o.archetypes if q in x.source_questions and x.origin is ArchetypeOrigin.exam
+                          and usable(x)), a)
+        exam_slots.append(TestSlot(tier=Tier.exam, slot_type=SlotType.new if by_obj[o.id][2] else SlotType.review,
+                                   objective=o, archetype=archetype, priority=by_obj[o.id][1],
+                                   parallel_question=q, anchor_ids=[q.id],
+                                   target_difficulty={**_target([q], profile), "tier": "exam"}))
+
+    # Temel: geniş kapsam, kazanım başına bir soru (havuz yetmezse iki)
+    basic_taken: Counter = Counter()
+    basic = _sample_objectives(rng, pri, sections["basic"], basic_taken, cap=2)
+    # Orta: yeni kazanımlar ve temel bölümdekiler öncelikli (pekiştirme), kazanım başına bir soru
+    in_basic = {o.id for o, _, _ in basic}
+    medium_pool = [(o, p * (1.5 if o.id in in_basic else 1.0), new) for o, p, new in pri]
+    medium = _sample_objectives(rng, medium_pool, sections["medium"], Counter(), cap=2)
+
+    in_test: Counter = Counter()
+    origin_counts: Counter = Counter()
+
+    def make(tier: Tier, o, p, new) -> TestSlot:
+        cands = [a for a in o.archetypes if usable(a)]
+        if tier is Tier.basic:  # temel: açıklama/hesaplama/izleme açıları, en az kullanılan
+            simple = [a for a in cands if a.angle.value in ("explain", "compute", "trace")] or cands
+            arch = min(simple, key=lambda a: (in_test[a.id], _used_count(session, a.id), rng.random()))
+        else:
+            arch = _choose_archetype(session, o, rng, in_test, origin_counts, len(medium), approved_only)
+            origin_counts["source" if arch.origin is not ArchetypeOrigin.model else "model"] += 1
+        in_test[arch.id] += 1
+        anchors = _anchors(o, rng) if tier is Tier.medium else []
+        target = BASIC_TARGET if tier is Tier.basic else _medium_target(profile)
+        return TestSlot(tier=tier, slot_type=SlotType.new if new else SlotType.review, objective=o,
+                        archetype=arch, priority=p, anchor_ids=[q.id for q in anchors], target_difficulty=target)
+
+    ordered = (sorted((make(Tier.basic, *x) for x in basic), key=lambda s: _topic_sort_key(s.objective))
+               + sorted((make(Tier.medium, *x) for x in medium), key=lambda s: _topic_sort_key(s.objective))
+               + sorted(exam_slots, key=lambda s: _topic_sort_key(s.objective)))
+    test = Test(course_id=course_id, seed=seed, size=len(ordered), format=TestFormat.kazanim,
+                config={"sections": sections}, status=TestStatus.draft)
+    session.add(test)
+    for pos, slot in enumerate(ordered, 1):
+        slot.position = pos
+        test.slots.append(slot)
+    session.commit()
+    return test
+
+
 # --- Görüntüleme ---
 
 
@@ -288,7 +419,8 @@ def test_out(session: Session, test_id: int, with_slots: bool = True) -> TestOut
             a, o = s.archetype, s.objective
             anchors = [session.get(SourceQuestion, i) for i in s.anchor_ids]
             slots.append(SlotOut(
-                slot_id=s.id, position=s.position, slot_type=s.slot_type, priority=s.priority,
+                slot_id=s.id, position=s.position, slot_type=s.slot_type, priority=s.priority, tier=s.tier,
+                parallel_question=_anchor_out(s.parallel_question) if s.parallel_question else None,
                 objective_key=o.key, objective_text=o.text, bloom_level=o.bloom_level,
                 archetype_key=a.key, skill=a.skill, angle=a.angle, origin=a.origin, variation_axes=a.variation_axes,
                 used_params=_used_params(session, a.id),
@@ -299,8 +431,18 @@ def test_out(session: Session, test_id: int, with_slots: bool = True) -> TestOut
                 question=_question_out(s.current_question) if s.current_question else None,
                 attempts=len(s.questions),
             ))
-    return TestOut(id=test.id, course_id=test.course_id, status=test.status, seed=test.seed, size=test.size,
-                   created_at=test.created_at, finalized_at=test.finalized_at, counts=dict(counts), slots=slots)
+    objectives = []
+    seen = set()
+    for sl in test.slots:
+        o = sl.objective
+        if o.id not in seen:
+            seen.add(o.id)
+            objectives.append(MeasuredObjectiveOut(id=o.id, key=o.key, text=o.text, bloom_level=o.bloom_level,
+                                                   basis=o.basis, active_cards=sum(c.active for c in o.cards)))
+    counts.update(s.tier.value for s in test.slots if s.tier is not None)
+    return TestOut(id=test.id, course_id=test.course_id, format=test.format, config=test.config, status=test.status,
+                   seed=test.seed, size=test.size, created_at=test.created_at, finalized_at=test.finalized_at,
+                   counts=dict(counts), objectives=objectives, slots=slots)
 
 
 def list_tests(session: Session, course_id: int) -> list[TestOut]:
@@ -337,6 +479,11 @@ def import_generated(session: Session, items: list[GeneratedQuestionIn]) -> list
             continue
         if not item.prompt or not item.prompt.strip():
             errors.append(f"[{n}] slot {slot.id}: prompt gerekli")
+        if slot.tier is not None:
+            if item.answer_type is not AnswerType.choice or not item.choices or len(item.choices) != CHOICES:
+                errors.append(f"[{n}] slot {slot.id}: kazanım testinde answer_type=choice ve tam {CHOICES} şık gerekli")
+            elif len(set(item.choices)) != CHOICES:
+                errors.append(f"[{n}] slot {slot.id}: şıklar birbirinden farklı olmalı")
         axes = slot.archetype.variation_axes
         for k, v in item.params.items():
             if k not in axes:
@@ -432,6 +579,11 @@ def judge_verdict(scores: dict, target: dict | None) -> tuple[str, list[str]]:
     """Hakem puanlarını hedef zorlukla karşılaştırır: ok | scale_up | scale_down | reject."""
     if not target:
         return "ok", ["hedef zorluk yok (profil hesaplanmamış)"]
+    tier = target.get("tier")
+    if tier in ("basic", "medium"):
+        return _tier_verdict(tier, scores)
+    if tier == "exam" and target.get("est_minutes"):
+        target = {**target, "est_minutes": float(target["est_minutes"]) * MC_TIME_FACTOR}
     issues, direction = [], []
     bloom_diff = BloomLevel(scores["bloom_level"]).rank - float(target["bloom_level"])
     if abs(bloom_diff) > 1:
@@ -455,6 +607,30 @@ def judge_verdict(scores: dict, target: dict | None) -> tuple[str, list[str]]:
     return Counter(direction).most_common(1)[0][0], issues
 
 
+TIER_BOUNDS = {  # (min, max) — dışında kalırsa scale_up / scale_down (şıklı sorular için kalibre)
+    "basic": {"steps": (0, 4), "est_minutes": (0, 2.5), "bloom": (1, 3)},
+    "medium": {"steps": (2, 8), "est_minutes": (1.0, 7), "bloom": (3, 5)},
+}
+MC_TIME_FACTOR = 0.5  # şıklı paralel soru, açık uçlu orijinalinden yaklaşık iki kat hızlı çözülür
+
+
+def _tier_verdict(tier: str, scores: dict) -> tuple[str, list[str]]:
+    b = TIER_BOUNDS[tier]
+    values = {"steps": float(scores["steps"]), "est_minutes": float(scores["est_minutes"]),
+              "bloom": BloomLevel(scores["bloom_level"]).rank}
+    issues, direction = [], []
+    for k, (lo, hi) in b.items():
+        if values[k] < lo:
+            issues.append(f"{k}: {values[k]:g} < {tier} alt sınırı {lo}")
+            direction.append("scale_up")
+        elif values[k] > hi:
+            issues.append(f"{k}: {values[k]:g} > {tier} üst sınırı {hi}")
+            direction.append("scale_down")
+    if not direction:
+        return "ok", issues
+    return Counter(direction).most_common(1)[0][0], issues
+
+
 def judge(session: Session, items: list[JudgeIn]) -> list[dict]:
     out = []
     for item in items:
@@ -466,6 +642,10 @@ def judge(session: Session, items: list[JudgeIn]) -> list[dict]:
             continue
         scores = item.scores.model_dump(mode="json")
         verdict, issues = judge_verdict(scores, q.slot.target_difficulty)
+        quality = [msg for ok, msg in ((item.answer_ok, "cevap yanlış"), (item.single_correct, "birden fazla doğru şık"),
+                                       (item.distractors_ok, "yanlış şıklar zayıf")) if not ok]
+        if quality:
+            verdict, issues = "reject", [*quality, *issues]
         q.difficulty_scores = {"scores": scores, "target": q.slot.target_difficulty, "verdict": verdict,
                                "issues": issues, "comment": item.comment}
         if verdict != "ok" and q.kind is QuestionKind.generated:
@@ -504,9 +684,10 @@ def finalize_test(session: Session, test_id: int, allow_partial: bool = False) -
     return test_out(session, test_id)
 
 
-def discard_test(session: Session, test_id: int) -> None:
+def discard_test(session: Session, test_id: int, force: bool = False) -> None:
+    """Testi siler. Tamamlanmış testler (ve çözümleri) yalnızca force ile silinir."""
     test = _get_test(session, test_id)
-    if test.status is TestStatus.ready:
-        raise AnalysisError("Tamamlanmış test silinemez")
+    if test.status is TestStatus.ready and not force:
+        raise AnalysisError("Tamamlanmış test silinemez (gönderimleri de silinir; --force gerekir)")
     session.delete(test)
     session.commit()

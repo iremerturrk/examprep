@@ -12,10 +12,14 @@ from examprep.models import (
     BloomLevel,
     DocStatus,
     DocType,
+    ObjectiveBasis,
     QuestionKind,
     QuestionStatus,
     SlotType,
+    TestFormat,
     TestStatus,
+    Tier,
+    CardKind,
 )
 
 # Skill'in verdiği kalıcı anahtar: küçük harf, rakam, nokta, tire, alt çizgi.
@@ -91,6 +95,7 @@ class ObjectiveIn(_In):
     topic_key: Key
     text: NonEmpty
     bloom_level: BloomLevel
+    basis: ObjectiveBasis = ObjectiveBasis.slides  # past_questions: slaytta yok, çıkmış sorulardan
     source_document_id: int | None = None
     source_pages: list[Annotated[int, Field(ge=1)]] = []
 
@@ -217,6 +222,7 @@ class ObjectiveOut(BaseModel):
     key: str
     text: str
     bloom_level: BloomLevel
+    basis: ObjectiveBasis = ObjectiveBasis.slides
     source_document_id: int | None
     source_pages: list[int]
     weight: float
@@ -307,6 +313,9 @@ class GeneratedQuestionIn(_In):
 class JudgeIn(_In):
     question_id: int
     scores: DifficultyIn
+    answer_ok: bool = True  # verilen doğru cevap gerçekten doğru mu
+    single_correct: bool = True  # şıklı soruda tam bir doğru şık mı
+    distractors_ok: bool = True  # yanlış şıklar makul (tipik hatalar) mı
     comment: str | None = None
 
 
@@ -337,6 +346,8 @@ class SlotOut(BaseModel):
     slot_id: int
     position: int
     slot_type: SlotType
+    tier: Tier | None = None
+    parallel_question: AnchorOut | None = None
     priority: float
     objective_key: str
     objective_text: str
@@ -355,13 +366,94 @@ class SlotOut(BaseModel):
     attempts: int  # bu slot için üretilen soru sayısı (reddedilenler dahil)
 
 
+class MeasuredObjectiveOut(BaseModel):
+    id: int
+    key: str
+    text: str
+    bloom_level: BloomLevel
+    basis: ObjectiveBasis
+    active_cards: int
+
+
 class TestOut(BaseModel):
     id: int
     course_id: int
+    format: TestFormat = TestFormat.open
+    config: dict | None = None
     status: TestStatus
     seed: int
     size: int
     created_at: datetime
     finalized_at: datetime | None
     counts: dict[str, int]
+    objectives: list[MeasuredObjectiveOut] = []
     slots: list[SlotOut] = []
+
+
+# --- Kartlar ---
+
+
+class CardIn(_In):
+    objective_key: Key
+    kind: CardKind
+    front: NonEmpty  # Almanca soru / terim
+    back: NonEmpty  # Türkçe açıklama, terimler Almanca
+
+
+class CardRejectIn(_In):
+    card_id: int
+    reason: NonEmpty
+
+
+class CardOut(BaseModel):
+    id: int
+    objective_key: str
+    objective_text: str
+    kind: CardKind
+    front: str
+    back: str
+    known: int = 0
+    unknown: int = 0
+
+
+# --- Gönderim ---
+
+
+class AnswerIn(_In):
+    slot_id: int
+    selected: str | None = None  # None = boş bırakıldı
+
+
+class SubmissionIn(_In):
+    test_id: int
+    answers: list[AnswerIn]
+    duration_s: int | None = Field(default=None, ge=0)
+
+
+class QuestionResultOut(BaseModel):
+    position: int
+    tier: Tier | None
+    slot_id: int
+    question_id: int
+    attempt_id: int
+    prompt: str
+    choices: list | None
+    selected: str | None
+    answer: str
+    correct: bool
+    explanation: str | None
+    objective_key: str
+    objective_text: str
+    perceived_difficulty: str | None
+
+
+class SubmissionOut(BaseModel):
+    id: int
+    test_id: int
+    submitted_at: datetime
+    score: int
+    total: int
+    section_scores: dict
+    duration_s: int | None
+    results: list[QuestionResultOut] = []
+    weak_objectives: list[dict] = []  # [{key, text, wrong, total}]

@@ -104,6 +104,29 @@ class TestStatus(str, enum.Enum):
     ready = "ready"
 
 
+class TestFormat(str, enum.Enum):
+    open = "open"  # 3. aşamadaki açık uçlu testler
+    kazanim = "kazanim"  # şıklı kazanım testi (temel / orta / sınav düzeyi)
+
+
+class Tier(str, enum.Enum):
+    basic = "basic"  # Temel: hatırlama/anlama, ~1 dk
+    medium = "medium"  # Orta: uygulama/analiz, 2-4 dk
+    exam = "exam"  # Sınav düzeyi: bir çıkmış soruya paralel
+
+
+class ObjectiveBasis(str, enum.Enum):
+    slides = "slides"
+    past_questions = "past_questions"  # slaytta karşılığı yok, çıkmış sorulardan
+
+
+class CardKind(str, enum.Enum):
+    definition = "definition"
+    fact = "fact"
+    example = "example"
+    pitfall = "pitfall"
+
+
 class PerceivedDifficulty(str, enum.Enum):
     easy = "easy"
     exam_like = "exam_like"
@@ -254,6 +277,9 @@ class LearningObjective(Base):
     key: Mapped[str] = mapped_column(String(200))
     text: Mapped[str] = mapped_column(Text)
     bloom_level: Mapped[BloomLevel] = mapped_column(Enum(BloomLevel))
+    basis: Mapped[ObjectiveBasis] = mapped_column(
+        Enum(ObjectiveBasis), default=ObjectiveBasis.slides, server_default="slides"
+    )
     order: Mapped[int] = mapped_column(Integer, default=0)
     source_document_id: Mapped[int | None] = mapped_column(
         ForeignKey("source_document.id", ondelete="SET NULL")
@@ -269,6 +295,9 @@ class LearningObjective(Base):
         cascade="all, delete-orphan",
         passive_deletes=True,
         order_by="QuestionArchetype.id",
+    )
+    cards: Mapped[list["Flashcard"]] = relationship(
+        back_populates="objective", cascade="all, delete-orphan", passive_deletes=True, order_by="Flashcard.id"
     )
 
     @property
@@ -360,8 +389,13 @@ class Attempt(Base):
         Enum(PerceivedDifficulty)
     )
     time_spent_s: Mapped[int | None] = mapped_column(Integer)
+    submission_id: Mapped[int | None] = mapped_column(
+        ForeignKey("test_submission.id", ondelete="CASCADE"), index=True
+    )
+    selected: Mapped[str | None] = mapped_column(Text)  # seçilen şık (boş = cevapsız)
 
     question: Mapped[GeneratedQuestion] = relationship(back_populates="attempts")
+    submission: Mapped["TestSubmission | None"] = relationship(back_populates="attempts")
 
 
 class DifficultyProfile(Base):
@@ -394,6 +428,8 @@ class Test(Base):
     course_id: Mapped[int] = mapped_column(ForeignKey("course.id", ondelete="CASCADE"), index=True)
     seed: Mapped[int] = mapped_column(Integer)
     size: Mapped[int] = mapped_column(Integer)
+    format: Mapped[TestFormat] = mapped_column(Enum(TestFormat), default=TestFormat.open, server_default="open")
+    config: Mapped[dict | None] = mapped_column(JSON)  # bölüm boyutları vb.
     status: Mapped[TestStatus] = mapped_column(Enum(TestStatus), default=TestStatus.draft)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     finalized_at: Mapped[datetime | None] = mapped_column(DateTime)
@@ -405,6 +441,9 @@ class Test(Base):
         passive_deletes=True,
         order_by="TestSlot.position",
     )
+    submissions: Mapped[list["TestSubmission"]] = relationship(
+        back_populates="test", cascade="all, delete-orphan", passive_deletes=True, order_by="TestSubmission.id"
+    )
 
 
 class TestSlot(Base):
@@ -414,6 +453,10 @@ class TestSlot(Base):
     test_id: Mapped[int] = mapped_column(ForeignKey("test.id", ondelete="CASCADE"), index=True)
     position: Mapped[int] = mapped_column(Integer)
     slot_type: Mapped[SlotType] = mapped_column(Enum(SlotType))
+    tier: Mapped[Tier | None] = mapped_column(Enum(Tier))  # kazanım testlerinde bölüm
+    parallel_question_id: Mapped[int | None] = mapped_column(
+        ForeignKey("source_question.id", ondelete="SET NULL")
+    )  # sınav düzeyi slotunun paralel olduğu çıkmış soru
     objective_id: Mapped[int] = mapped_column(
         ForeignKey("learning_objective.id", ondelete="CASCADE"), index=True
     )
@@ -430,7 +473,8 @@ class TestSlot(Base):
     test: Mapped[Test] = relationship(back_populates="slots")
     objective: Mapped[LearningObjective] = relationship()
     archetype: Mapped[QuestionArchetype] = relationship()
-    source_question: Mapped[SourceQuestion | None] = relationship()
+    source_question: Mapped[SourceQuestion | None] = relationship(foreign_keys=[source_question_id])
+    parallel_question: Mapped[SourceQuestion | None] = relationship(foreign_keys=[parallel_question_id])
     questions: Mapped[list[GeneratedQuestion]] = relationship(
         back_populates="slot",
         foreign_keys="GeneratedQuestion.slot_id",
@@ -444,3 +488,55 @@ class TestSlot(Base):
         """Slotun en son eklenen ve reddedilmemiş sorusu."""
         live = [q for q in self.questions if q.status is not QuestionStatus.rejected]
         return live[-1] if live else None
+
+
+class TestSubmission(Base):
+    """Bir testin çözülüp gönderilmesi (aynı test birden çok kez çözülebilir)."""
+
+    __tablename__ = "test_submission"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    test_id: Mapped[int] = mapped_column(ForeignKey("test.id", ondelete="CASCADE"), index=True)
+    submitted_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    score: Mapped[int] = mapped_column(Integer)
+    total: Mapped[int] = mapped_column(Integer)
+    section_scores: Mapped[dict] = mapped_column(JSON, default=dict)  # {tier: {correct, total}}
+    duration_s: Mapped[int | None] = mapped_column(Integer)
+
+    test: Mapped[Test] = relationship(back_populates="submissions")
+    attempts: Mapped[list[Attempt]] = relationship(
+        back_populates="submission", cascade="all, delete-orphan", passive_deletes=True, order_by="Attempt.id"
+    )
+
+
+class Flashcard(Base):
+    """Kazanıma bağlı tekrar kartı (ön yüz Almanca, arka yüz Türkçe açıklama)."""
+
+    __tablename__ = "flashcard"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    objective_id: Mapped[int] = mapped_column(
+        ForeignKey("learning_objective.id", ondelete="CASCADE"), index=True
+    )
+    kind: Mapped[CardKind] = mapped_column(Enum(CardKind))
+    front: Mapped[str] = mapped_column(Text)
+    back: Mapped[str] = mapped_column(Text)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    reject_reason: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    objective: Mapped[LearningObjective] = relationship(back_populates="cards")
+    reviews: Mapped[list["CardReview"]] = relationship(
+        back_populates="card", cascade="all, delete-orphan", passive_deletes=True
+    )
+
+
+class CardReview(Base):
+    __tablename__ = "card_review"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    card_id: Mapped[int] = mapped_column(ForeignKey("flashcard.id", ondelete="CASCADE"), index=True)
+    known: Mapped[bool] = mapped_column(Boolean)
+    reviewed_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    card: Mapped[Flashcard] = relationship(back_populates="reviews")
