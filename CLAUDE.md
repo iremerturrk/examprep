@@ -50,8 +50,16 @@ yerel benzerlik için sentence-transformers (küçük, offline model).
 
 ## Veri modeli
 Course > Topic > LearningObjective > QuestionArchetype > GeneratedQuestion > Attempt
-Ayrıca: SourceDocument (type ∈ {slides, homework, exam}), DifficultyProfile (ders başına),
-WeeklyPlan (sınav tarihine göre haftalara dağıtılmış kazanımlar)
+Ayrıca: SourceDocument (type ∈ {slides, homework, exam}), SourceQuestion (çıkmış soru),
+DifficultyProfile (ders başına), Test > TestSlot (istek üzerine üretilen testler)
+
+## Test üretimi
+- Sabit haftalık plan yok: kullanıcı her istediğinde o ana kadar yüklenmiş tüm
+  malzemeden yeni bir test üretilir (`test compose`). Kullanıcı her hafta yeni
+  slayt ekler, harita büyür; testler kümülatiftir.
+- Kazanım önceliği = ağırlık × durum: hiç test edilmemiş (yeni) kazanımlar öne
+  çıkar (~%40 kota), eskiler son test edilmeden bu yana geçen süreyle artan
+  tekrar çarpanıyla gelmeye devam eder; yanlış cevaplananlar ek öncelik alır.
 
 ## Kalıp kaynakları
 - QuestionArchetype.origin ∈ {exam, homework, web, model}
@@ -81,7 +89,7 @@ WeeklyPlan (sınav tarihine göre haftalara dağıtılmış kazanımlar)
 ## Planlanan skill'ler
 - /ders-analiz: bir dersin PDF'lerini oku, konu ağacı, kazanımlar,
   soru kalıpları ve zorluk profilini çıkar, CLI ile kaydet
-- /hafta-testi: WeeklyPlan'a göre haftalık test üret (kota, hakem, doğrulama)
+- /hafta-testi: tüm haritadan kümülatif test üret (kota, hakem, doğrulama)
 - /anki-uret: kazanımlardan kart üret, .apkg export et
 
 ## Aşamalar

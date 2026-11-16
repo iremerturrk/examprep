@@ -5,7 +5,18 @@ from typing import Annotated, Self
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
 
-from examprep.models import Angle, ArchetypeOrigin, BloomLevel, DocStatus, DocType
+from examprep.models import (
+    AnswerType,
+    Angle,
+    ArchetypeOrigin,
+    BloomLevel,
+    DocStatus,
+    DocType,
+    QuestionKind,
+    QuestionStatus,
+    SlotType,
+    TestStatus,
+)
 
 # Skill'in verdiği kalıcı anahtar: küçük harf, rakam, nokta, tire, alt çizgi.
 Key = Annotated[
@@ -254,3 +265,103 @@ class CourseMap(BaseModel):
     unmapped_questions: list[SourceQuestionOut]
     coverage: CoverageOut
     profile: ProfileOut | None
+
+
+# --- Test üretimi ---
+
+
+class CheckIn(_In):
+    checker: NonEmpty
+    input: dict
+    expected: dict = {}
+
+
+class GeneratedQuestionIn(_In):
+    slot_id: int
+    prompt: str | None = None  # past slotlarında boş bırakılır (kaynak soru aynen kullanılır)
+    answer: NonEmpty
+    answer_type: AnswerType = AnswerType.open
+    choices: list[NonEmpty] | None = None
+    explanation: str | None = None
+    params: dict[str, str] = {}  # varyasyon ekseni -> seçilen değer
+    check: CheckIn | None = None
+
+    @model_validator(mode="after")
+    def _choices(self) -> Self:
+        if self.answer_type is AnswerType.choice:
+            if not self.choices or len(self.choices) < 2:
+                raise ValueError("answer_type=choice için en az 2 seçenek gerekli")
+            if self.answer not in self.choices:
+                raise ValueError("Cevap seçeneklerden biri olmalı")
+        elif self.choices:
+            raise ValueError("choices yalnızca answer_type=choice ile kullanılır")
+        if self.answer_type is AnswerType.numeric:
+            try:
+                float(self.answer.replace(",", "."))
+            except ValueError:
+                if "/" not in self.answer:
+                    raise ValueError("answer_type=numeric için cevap sayı (ya da a/b kesri) olmalı") from None
+        return self
+
+
+class JudgeIn(_In):
+    question_id: int
+    scores: DifficultyIn
+    comment: str | None = None
+
+
+class AnchorOut(BaseModel):
+    ref: str
+    text: str
+    points: float | None
+    difficulty: dict | None
+
+
+class GeneratedQuestionOut(BaseModel):
+    id: int
+    kind: QuestionKind
+    status: QuestionStatus
+    reject_reason: str | None
+    prompt: str
+    answer: str
+    answer_type: AnswerType
+    choices: list | None
+    explanation: str | None
+    params: dict
+    verification: dict | None
+    similarity: dict | None
+    judge: dict | None
+
+
+class SlotOut(BaseModel):
+    slot_id: int
+    position: int
+    slot_type: SlotType
+    priority: float
+    objective_key: str
+    objective_text: str
+    bloom_level: BloomLevel
+    archetype_key: str
+    skill: str
+    angle: Angle
+    origin: ArchetypeOrigin
+    variation_axes: dict[str, list[str]]
+    used_params: list[dict]  # bu kalıpla daha önce kullanılan kombinasyonlar (tekrar etme)
+    anchors: list[AnchorOut]
+    target_difficulty: dict | None
+    past_question: AnchorOut | None
+    past_solution: str | None
+    question: GeneratedQuestionOut | None
+    attempts: int  # bu slot için üretilen soru sayısı (reddedilenler dahil)
+
+
+class TestOut(BaseModel):
+    id: int
+    course_id: int
+    status: TestStatus
+    seed: int
+    size: int
+    created_at: datetime
+    finalized_at: datetime | None
+    counts: dict[str, int]
+    slots: list[SlotOut] = []

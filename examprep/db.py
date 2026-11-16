@@ -3,7 +3,7 @@
 from collections.abc import Iterator
 from contextlib import contextmanager
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -48,7 +48,41 @@ def reset_engine() -> None:
 
 
 def init_db(engine: Engine | None = None) -> None:
-    Base.metadata.create_all(engine or get_engine())
+    engine = engine or get_engine()
+    Base.metadata.create_all(engine)
+    add_missing_columns(engine)
+
+
+def add_missing_columns(engine: Engine) -> list[str]:
+    """Basit SQLite migration'ı: modelde olup tabloda olmayan kolonları ekler.
+
+    Yeni tablolar create_all ile oluşur; mevcut tablolara eklenen kolonlar nullable
+    olmalı ya da server_default taşımalı. Eklenen kolonları "tablo.kolon" olarak döndürür.
+    """
+    inspector = inspect(engine)
+    added: list[str] = []
+    with engine.begin() as conn:
+        for table in Base.metadata.sorted_tables:
+            if not inspector.has_table(table.name):
+                continue
+            existing = {c["name"] for c in inspector.get_columns(table.name)}
+            for column in table.columns:
+                if column.name in existing:
+                    continue
+                if not column.nullable and column.server_default is None:
+                    raise RuntimeError(
+                        f"{table.name}.{column.name} NOT NULL ve server_default yok; otomatik eklenemez"
+                    )
+                ddl = f'ALTER TABLE "{table.name}" ADD COLUMN "{column.name}" {column.type.compile(engine.dialect)}'
+                if column.server_default is not None:
+                    ddl += f" NOT NULL DEFAULT '{column.server_default.arg}'"
+                for fk in column.foreign_keys:
+                    ddl += f' REFERENCES "{fk.column.table.name}"("{fk.column.name}")'
+                    if fk.ondelete:
+                        ddl += f" ON DELETE {fk.ondelete}"
+                conn.execute(text(ddl))
+                added.append(f"{table.name}.{column.name}")
+    return added
 
 
 @contextmanager

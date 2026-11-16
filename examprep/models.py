@@ -2,7 +2,7 @@
 
 Course > Topic > LearningObjective > QuestionArchetype > GeneratedQuestion > Attempt
 Ayrıca: SourceDocument (+ DocumentPage, SourceQuestion), DifficultyProfile (ders başına),
-WeeklyPlan (sınav tarihine göre haftalara dağıtılmış kazanımlar).
+Test > TestSlot (istek üzerine, tüm haritadan üretilen kümülatif testler).
 """
 
 import enum
@@ -18,6 +18,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Integer,
+    LargeBinary,
     String,
     Table,
     Text,
@@ -75,22 +76,38 @@ class Angle(str, enum.Enum):
     design = "design"  # tasarım
 
 
+class QuestionKind(str, enum.Enum):
+    generated = "generated"  # kalıptan yeni üretilmiş soru
+    past = "past"  # çıkmış soru, aynen soruluyor
+
+
+class AnswerType(str, enum.Enum):
+    numeric = "numeric"
+    choice = "choice"
+    open = "open"  # kullanıcı örnek çözüme göre kendisi puanlar
+
+
+class QuestionStatus(str, enum.Enum):
+    draft = "draft"
+    accepted = "accepted"
+    rejected = "rejected"
+
+
+class SlotType(str, enum.Enum):
+    new = "new"  # daha önce hiç test edilmemiş kazanım
+    review = "review"  # tekrar
+    past = "past"  # çıkmış soru
+
+
+class TestStatus(str, enum.Enum):
+    draft = "draft"
+    ready = "ready"
+
+
 class PerceivedDifficulty(str, enum.Enum):
     easy = "easy"
     exam_like = "exam_like"
     hard = "hard"
-
-
-weekly_plan_objective = Table(
-    "weekly_plan_objective",
-    Base.metadata,
-    Column("weekly_plan_id", ForeignKey("weekly_plan.id", ondelete="CASCADE"), primary_key=True),
-    Column(
-        "learning_objective_id",
-        ForeignKey("learning_objective.id", ondelete="CASCADE"),
-        primary_key=True,
-    ),
-)
 
 
 archetype_source_question = Table(
@@ -123,11 +140,8 @@ class Course(Base):
     difficulty_profile: Mapped["DifficultyProfile | None"] = relationship(
         back_populates="course", cascade="all, delete-orphan", passive_deletes=True
     )
-    weekly_plans: Mapped[list["WeeklyPlan"]] = relationship(
-        back_populates="course",
-        cascade="all, delete-orphan",
-        passive_deletes=True,
-        order_by="WeeklyPlan.week_no",
+    tests: Mapped[list["Test"]] = relationship(
+        back_populates="course", cascade="all, delete-orphan", passive_deletes=True, order_by="Test.id"
     )
 
 
@@ -190,6 +204,9 @@ class SourceQuestion(Base):
     solution: Mapped[str | None] = mapped_column(Text)
     # steps, input_size, concept_count, bloom_level, est_minutes, edge_cases
     difficulty: Mapped[dict | None] = mapped_column(JSON)
+    # benzerlik kontrolü için önbelleğe alınmış embedding (float32 dizisi)
+    embedding: Mapped[bytes | None] = mapped_column(LargeBinary)
+    embedding_model: Mapped[str | None] = mapped_column(String(200))
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     document: Mapped[SourceDocument] = relationship(back_populates="questions")
@@ -294,15 +311,37 @@ class GeneratedQuestion(Base):
     archetype_id: Mapped[int] = mapped_column(
         ForeignKey("question_archetype.id", ondelete="CASCADE"), index=True
     )
+    slot_id: Mapped[int | None] = mapped_column(
+        ForeignKey("test_slot.id", ondelete="CASCADE"), index=True
+    )
+    kind: Mapped[QuestionKind] = mapped_column(
+        Enum(QuestionKind), default=QuestionKind.generated, server_default="generated"
+    )
+    source_question_id: Mapped[int | None] = mapped_column(
+        ForeignKey("source_question.id", ondelete="SET NULL")
+    )
     prompt: Mapped[str] = mapped_column(Text)
     answer: Mapped[str] = mapped_column(Text)
+    answer_type: Mapped[AnswerType] = mapped_column(
+        Enum(AnswerType), default=AnswerType.open, server_default="open"
+    )
+    choices: Mapped[list | None] = mapped_column(JSON)
     explanation: Mapped[str | None] = mapped_column(Text)
-    params: Mapped[dict] = mapped_column(JSON, default=dict)
+    params: Mapped[dict] = mapped_column(JSON, default=dict)  # seçilen eksen kombinasyonu
+    check: Mapped[dict | None] = mapped_column(JSON)  # doğrulayıcı adı + girdi + iddia edilen sonuç
     verified: Mapped[bool] = mapped_column(Boolean, default=False)
-    difficulty_scores: Mapped[dict] = mapped_column(JSON, default=dict)
+    verification: Mapped[dict | None] = mapped_column(JSON)  # {status, checker, details}
+    similarity: Mapped[dict | None] = mapped_column(JSON)  # {score, source_question_id, model}
+    difficulty_scores: Mapped[dict] = mapped_column(JSON, default=dict)  # hakem puanları + karar
+    status: Mapped[QuestionStatus] = mapped_column(
+        Enum(QuestionStatus), default=QuestionStatus.draft, server_default="draft"
+    )
+    reject_reason: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     archetype: Mapped[QuestionArchetype] = relationship(back_populates="questions")
+    slot: Mapped["TestSlot | None"] = relationship(back_populates="questions", foreign_keys=[slot_id])
+    source_question: Mapped[SourceQuestion | None] = relationship()
     attempts: Mapped[list["Attempt"]] = relationship(
         back_populates="question", cascade="all, delete-orphan", passive_deletes=True
     )
@@ -346,17 +385,62 @@ class DifficultyProfile(Base):
     course: Mapped[Course] = relationship(back_populates="difficulty_profile")
 
 
-class WeeklyPlan(Base):
-    """Bir haftada çalışılacak kazanımlar. Haftalık test bu kayda göre üretilir."""
+class Test(Base):
+    """İstek üzerine, o anki tüm haritadan üretilen test."""
 
-    __tablename__ = "weekly_plan"
-    __table_args__ = (UniqueConstraint("course_id", "week_no", name="uq_plan_course_week"),)
+    __tablename__ = "test"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     course_id: Mapped[int] = mapped_column(ForeignKey("course.id", ondelete="CASCADE"), index=True)
-    week_no: Mapped[int] = mapped_column(Integer)  # 1'den başlar
-    start_date: Mapped[date] = mapped_column(Date)
-    end_date: Mapped[date] = mapped_column(Date)
+    seed: Mapped[int] = mapped_column(Integer)
+    size: Mapped[int] = mapped_column(Integer)
+    status: Mapped[TestStatus] = mapped_column(Enum(TestStatus), default=TestStatus.draft)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    finalized_at: Mapped[datetime | None] = mapped_column(DateTime)
 
-    course: Mapped[Course] = relationship(back_populates="weekly_plans")
-    objectives: Mapped[list[LearningObjective]] = relationship(secondary=weekly_plan_objective)
+    course: Mapped[Course] = relationship(back_populates="tests")
+    slots: Mapped[list["TestSlot"]] = relationship(
+        back_populates="test",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="TestSlot.position",
+    )
+
+
+class TestSlot(Base):
+    __tablename__ = "test_slot"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    test_id: Mapped[int] = mapped_column(ForeignKey("test.id", ondelete="CASCADE"), index=True)
+    position: Mapped[int] = mapped_column(Integer)
+    slot_type: Mapped[SlotType] = mapped_column(Enum(SlotType))
+    objective_id: Mapped[int] = mapped_column(
+        ForeignKey("learning_objective.id", ondelete="CASCADE"), index=True
+    )
+    archetype_id: Mapped[int] = mapped_column(
+        ForeignKey("question_archetype.id", ondelete="CASCADE"), index=True
+    )
+    source_question_id: Mapped[int | None] = mapped_column(
+        ForeignKey("source_question.id", ondelete="CASCADE")
+    )  # yalnız past slotlarında
+    anchor_ids: Mapped[list[int]] = mapped_column(JSON, default=list)  # çapa sınav soruları
+    target_difficulty: Mapped[dict | None] = mapped_column(JSON)
+    priority: Mapped[float] = mapped_column(Float, default=1.0)
+
+    test: Mapped[Test] = relationship(back_populates="slots")
+    objective: Mapped[LearningObjective] = relationship()
+    archetype: Mapped[QuestionArchetype] = relationship()
+    source_question: Mapped[SourceQuestion | None] = relationship()
+    questions: Mapped[list[GeneratedQuestion]] = relationship(
+        back_populates="slot",
+        foreign_keys="GeneratedQuestion.slot_id",
+        order_by="GeneratedQuestion.id",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+    @property
+    def current_question(self) -> GeneratedQuestion | None:
+        """Slotun en son eklenen ve reddedilmemiş sorusu."""
+        live = [q for q in self.questions if q.status is not QuestionStatus.rejected]
+        return live[-1] if live else None
