@@ -46,3 +46,31 @@ def scanned_pdf() -> bytes:
     data = doc.tobytes()
     doc.close()
     return data
+
+
+def make_pdf(*page_texts: str) -> bytes:
+    doc = pymupdf.open()
+    for body in page_texts:
+        doc.new_page().insert_text((72, 72), body)
+    data = doc.tobytes()
+    doc.close()
+    return data
+
+
+@pytest.fixture
+def course_docs(session, course, tmp_path):
+    """Derse bir slayt, bir sınav (2 sayfa) ve bir ödev belgesi yükler. {tür: belge_id} döndürür."""
+    from examprep.ingest import ingest_document
+    from examprep.models import DocType
+
+    ids = {}
+    for doc_type, pages in [
+        (DocType.slides, ["Siralama algoritmalari", "Graflar"]),
+        (DocType.exam, ["Soru 1: merge sort izle", "Soru 2: BFS"]),
+        (DocType.homework, ["Odev 1: quicksort"]),
+    ]:
+        doc, _ = ingest_document(
+            session, course.id, f"{doc_type.value}.pdf", make_pdf(*pages), doc_type, tmp_path
+        )
+        ids[doc_type.value] = doc.id
+    return ids

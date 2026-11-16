@@ -21,13 +21,24 @@ JSON girdiyle çağırır (ör. `python -m examprep archetype add --json file.js
 CLI girdiyi Pydantic şemasıyla doğrular.
 
 ## Temel ilke
-Kaynak sorular asla doğrudan sorulmaz. Her soru bir "soru kalıbına"
-(QuestionArchetype: beceri + varyasyon eksenleri) soyutlanır, yeni sorular
-bu kalıptan farklı bir kombinasyonla üretilir.
+Testlerin çoğu soru kalıplarından (QuestionArchetype: beceri + açı + varyasyon
+eksenleri) üretilen yeni sorulardır: kalıp aynı, kombinasyon farklı.
 Örnek: sınavda merge sort izi çıktıysa, kalıp "karşılaştırma tabanlı sıralama
 algoritmasını verilen dizide izle" olur; yeni soru quicksort veya heapsort ile
 farklı bir dizi üzerinde sorulabilir.
-Slaytlardaki tüm kazanımlar, sınavda hiç çıkmamış olsalar da kapsanır.
+Aynı konudan birden fazla soru gelebilir; bu pekiştirmeye yardım eder.
+Çıkmış sınav/ödev soruları da düşünme şeklini oturtmak için aynen sorulabilir;
+"Çıkmış soru" etiketiyle ve ayarlanabilir bir kotayla (varsayılan ~%20).
+Benzerlik filtresi yalnızca üretilen sorulara uygulanır (kopya üretilmez).
+
+Kapsam ve çeşitlilik:
+- Slaytlardaki tüm kazanımlar, sınavda hiç çıkmamış olsalar da kapsanır.
+- Her kazanım en az 2 farklı açıdan kalıpla kapsanır (açılar: hesaplama,
+  izleme, karşılaştırma, hata bulma, kenar durum, açıklama, tasarım);
+  sınavda çıkmış kazanımlara da farklı açılar eklenir.
+- Ağırlık kazanım düzeyindedir: 1 + bağlı sınav sorusu × 1 + ödev sorusu × 0.5
+  (arayüzden elle değiştirilebilir). Test önce kazanımı ağırlığa göre seçer,
+  sonra o kazanımın kalıpları arasında dönüşümlü gider.
 
 ## Kullanım bağlamı
 Tek kullanıcılı, yerel çalışan araç. Auth, deploy ve API anahtarı yok.
@@ -44,12 +55,13 @@ WeeklyPlan (sınav tarihine göre haftalara dağıtılmış kazanımlar)
 
 ## Kalıp kaynakları
 - QuestionArchetype.origin ∈ {exam, homework, web, model}
-- model: Claude, slayt içeriğinden her kazanım için farklı test açıları
-  (hesaplama, izleme, karşılaştırma, hata bulma, kenar durum) türetir
+- model: Claude, slayt içeriğinden her kazanım için eksik açıları türetir
 - web: opsiyonel; web sorusu kopyalanmaz, archetype'a soyutlanır, source_url saklanır
 - Kapsam kilidi: slayt kazanımlarına eşlenemeyen archetype atılır
 - Benzer archetype'lar birleştirilir
-- Test üretiminde kaynak kotası (varsayılan ~%50 exam/homework)
+- Test üretiminde kaynak kotası (varsayılan ~%50 exam/homework kalıplarından)
+- Skill'ler kayıtları anahtarla (key) upsert eder; kullanıcının onayladığı
+  kayıtların üzerine yazılmaz
 
 ## Zorluk kalibrasyonu
 - Her ders için çıkmış sınavlardan DifficultyProfile çıkarılır:

@@ -3,7 +3,9 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
 from examprep.models import (
+    Angle,
     ArchetypeOrigin,
+    BloomLevel,
     Attempt,
     Course,
     DocType,
@@ -22,11 +24,20 @@ def _doc(course, sha="a" * 64):
 
 
 def test_full_hierarchy_roundtrip(session, course):
-    topic = Topic(course=course, name="Sıralama")
-    lo = LearningObjective(topic=topic, text="Karşılaştırma tabanlı sıralamayı izle")
+    topic = Topic(course=course, key="siralama", name="Sıralama")
+    lo = LearningObjective(
+        course_id=course.id,
+        topic=topic,
+        key="siralama.izle",
+        text="Karşılaştırma tabanlı sıralamayı izle",
+        bloom_level=BloomLevel.apply,
+    )
     arch = QuestionArchetype(
+        course_id=course.id,
+        key="siralama.izle.trace",
         objective=lo,
         skill="Verilen dizide sıralama algoritmasını izle",
+        angle=Angle.trace,
         variation_axes={"algorithm": ["merge", "quick", "heap"]},
         origin=ArchetypeOrigin.exam,
     )
@@ -77,9 +88,13 @@ def test_weekly_plan_links_objectives_and_cascades(session, course):
 
     from examprep.models import WeeklyPlan, weekly_plan_objective
 
-    topic = Topic(course=course, name="Graflar")
-    lo1 = LearningObjective(topic=topic, text="BFS izle")
-    lo2 = LearningObjective(topic=topic, text="Dijkstra uygula")
+    topic = Topic(course=course, key="graflar", name="Graflar")
+    lo1 = LearningObjective(
+        course_id=course.id, topic=topic, key="g.bfs", text="BFS izle", bloom_level=BloomLevel.apply
+    )
+    lo2 = LearningObjective(
+        course_id=course.id, topic=topic, key="g.dij", text="Dijkstra uygula", bloom_level=BloomLevel.apply
+    )
     plan = WeeklyPlan(
         course=course, week_no=1, start_date=date(2026, 11, 16), end_date=date(2026, 11, 22),
         objectives=[lo1, lo2],

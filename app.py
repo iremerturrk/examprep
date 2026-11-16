@@ -19,6 +19,7 @@ nav = st.navigation(
     [
         st.Page("pages/1_Dersler.py", title="Dersler", icon="🎓", default=True),
         st.Page("pages/2_Yukle.py", title="PDF Yükle", icon="📄"),
+        st.Page("pages/3_Harita.py", title="Kazanım Haritası", icon="🗺️"),
     ]
 )
 nav.run()
