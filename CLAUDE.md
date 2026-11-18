@@ -2,7 +2,7 @@
 
 Üniversite dersleri için kişisel sınav hazırlık sistemi.
 Girdi: slaytlar, ödevler, çıkmış sınavlar (PDF).
-Çıktı: Anki desteleri (.apkg) ve haftalık testler.
+Çıktı: şıklı kazanım testleri (çözülüp gönderilir) ve her teste ait kart destesi (uygulama içi + Anki .apkg).
 
 ## Mimari: API yok, motor Claude Code
 Uygulama hiçbir LLM API'si çağırmaz. Analiz ve soru üretimi Claude Code
@@ -21,13 +21,27 @@ JSON girdiyle çağırır (ör. `python -m examprep archetype add --json file.js
 CLI girdiyi Pydantic şemasıyla doğrular.
 
 ## Temel ilke
-Kaynak sorular asla doğrudan sorulmaz. Her soru bir "soru kalıbına"
-(QuestionArchetype: beceri + varyasyon eksenleri) soyutlanır, yeni sorular
-bu kalıptan farklı bir kombinasyonla üretilir.
+Testlerin çoğu soru kalıplarından (QuestionArchetype: beceri + açı + varyasyon
+eksenleri) üretilen yeni sorulardır: kalıp aynı, kombinasyon farklı.
 Örnek: sınavda merge sort izi çıktıysa, kalıp "karşılaştırma tabanlı sıralama
 algoritmasını verilen dizide izle" olur; yeni soru quicksort veya heapsort ile
 farklı bir dizi üzerinde sorulabilir.
-Slaytlardaki tüm kazanımlar, sınavda hiç çıkmamış olsalar da kapsanır.
+Aynı konudan birden fazla soru gelebilir; bu pekiştirmeye yardım eder.
+Amaç konuyu öğrenmek: testler MEB kazanım testi tarzındadır (bkz. "Test formatı").
+Çıkmış sorular "sınav düzeyi" bölümünde paralel sorularla (aynı beceri ve yapı,
+yeni veri) temsil edilir; benzerlik filtresi kopya üretilmesini engeller.
+
+Kapsam ve çeşitlilik:
+- Slaytlardaki tüm kazanımlar, sınavda hiç çıkmamış olsalar da kapsanır.
+- Slaytlarda karşılığı olmayan çıkmış sınav/ödev soruları da havuzda kalır:
+  bunlar için "çıkmış sorulardan" kazanımlar (basis = past_questions) ayrı
+  konular altında oluşturulur; ilgili slaytlar gelince normal konulara taşınır.
+- Her kazanım en az 2 farklı açıdan kalıpla kapsanır (açılar: hesaplama,
+  izleme, karşılaştırma, hata bulma, kenar durum, açıklama, tasarım);
+  sınavda çıkmış kazanımlara da farklı açılar eklenir.
+- Ağırlık kazanım düzeyindedir: 1 + bağlı sınav sorusu × 1 + ödev sorusu × 0.5
+  (arayüzden elle değiştirilebilir). Test önce kazanımı ağırlığa göre seçer,
+  sonra o kazanımın kalıpları arasında dönüşümlü gider.
 
 ## Kullanım bağlamı
 Tek kullanıcılı, yerel çalışan araç. Auth, deploy ve API anahtarı yok.
@@ -39,17 +53,42 @@ yerel benzerlik için sentence-transformers (küçük, offline model).
 
 ## Veri modeli
 Course > Topic > LearningObjective > QuestionArchetype > GeneratedQuestion > Attempt
-Ayrıca: SourceDocument (type ∈ {slides, homework, exam}), DifficultyProfile (ders başına),
-WeeklyPlan (sınav tarihine göre haftalara dağıtılmış kazanımlar)
+Ayrıca: SourceDocument (type ∈ {slides, homework, exam}), SourceQuestion (çıkmış soru),
+DifficultyProfile (ders başına), Test > TestSlot (istek üzerine üretilen testler)
+
+## Test formatı (kazanım testi)
+- Her test 35 şıklı soru (varsayılan; bölüm boyutları ayarlanabilir):
+  Temel 1–20 (hatırlama/anlama, ~1 dk, olabildiğince çok farklı kazanım),
+  Orta 21–30 (uygulama/analiz, 2–4 dk),
+  Sınav düzeyi 31–35 (her biri belirli bir çıkmış soruya paralel).
+- Her soruda 4 şık (A–D), tam bir doğru şık; yanlış şıklar tipik hatalardan.
+- Dil: soru, şıklar ve kartın ön yüzü Almanca (sınav dili); açıklamalar ve
+  kartların arka yüzü Türkçe, terimler Almanca.
+- Test ekranında kazanım / kalıp / konu adı gösterilmez; kazanımlar yalnızca
+  test gönderildikten sonra sonuçta görünür.
+- Her testin kendi kartları vardır: testin ölçtüğü kazanımların kartları
+  (tanım, olgu, mini örnek, sık hata) testten önce tekrar edilir ve .apkg
+  olarak dışa aktarılabilir. Kartlar kazanıma bağlıdır, testler arasında
+  yeniden kullanılır.
+
+## Test üretimi
+- Sabit haftalık plan yok: kullanıcı her istediğinde o ana kadar yüklenmiş tüm
+  malzemeden yeni bir test üretilir (`test compose`). Kullanıcı her hafta yeni
+  slayt ekler, harita büyür; testler kümülatiftir.
+- Kazanım önceliği = ağırlık × durum: hiç test edilmemiş (yeni) kazanımlar öne
+  çıkar (~%40 kota), eskiler son test edilmeden bu yana geçen süreyle artan
+  tekrar çarpanıyla gelmeye devam eder; yanlış cevaplananlar ek öncelik alır.
 
 ## Kalıp kaynakları
 - QuestionArchetype.origin ∈ {exam, homework, web, model}
-- model: Claude, slayt içeriğinden her kazanım için farklı test açıları
-  (hesaplama, izleme, karşılaştırma, hata bulma, kenar durum) türetir
+- model: Claude, slayt içeriğinden her kazanım için eksik açıları türetir
 - web: opsiyonel; web sorusu kopyalanmaz, archetype'a soyutlanır, source_url saklanır
-- Kapsam kilidi: slayt kazanımlarına eşlenemeyen archetype atılır
+- Kapsam kilidi: archetype bir kazanıma bağlı olmalı; kazanım slayttan ya da
+  çıkmış sınav/ödev sorusundan gelir, web içeriği tek başına kazanım oluşturmaz
 - Benzer archetype'lar birleştirilir
-- Test üretiminde kaynak kotası (varsayılan ~%50 exam/homework)
+- Test üretiminde kaynak kotası (varsayılan ~%50 exam/homework kalıplarından)
+- Skill'ler kayıtları anahtarla (key) upsert eder; kullanıcının onayladığı
+  kayıtların üzerine yazılmaz
 
 ## Zorluk kalibrasyonu
 - Her ders için çıkmış sınavlardan DifficultyProfile çıkarılır:
@@ -69,17 +108,21 @@ WeeklyPlan (sınav tarihine göre haftalara dağıtılmış kazanımlar)
 ## Planlanan skill'ler
 - /ders-analiz: bir dersin PDF'lerini oku, konu ağacı, kazanımlar,
   soru kalıpları ve zorluk profilini çıkar, CLI ile kaydet
-- /hafta-testi: WeeklyPlan'a göre haftalık test üret (kota, hakem, doğrulama)
-- /anki-uret: kazanımlardan kart üret, .apkg export et
+- /kazanim-testi: tüm haritadan kümülatif şıklı test + kartlar üret
+  (doğrulama, benzerlik, hakem)
+- /web-kesif: başka üniversitelerin sınav/alıştırmalarından kalıp ilhamı
+  (kopyalanmaz, archetype'a soyutlanır, source_url saklanır)
 
 ## Aşamalar
 1. İskelet + veri modeli + CLI + PDF ingest + Streamlit yükleme ekranı
 2. /ders-analiz skill'i + Streamlit'te kazanım haritası onay ekranı
-3. /hafta-testi skill'i + benzerlik ve doğrulama komutları
-4. /anki-uret skill'i + Anki export
-5. Test çözme ekranı + zorluk geri bildirimi
-6. İlerleme takibi ve ağırlık güncelleme
+3. Test üretimi + benzerlik ve doğrulama komutları
+4. Kazanım testi formatı: şıklı test, kartlar + Anki export, test çözme ve
+   gönderme ekranı, zorluk geri bildirimi, çıkmış-soru kazanımları, /web-kesif
+5. İlerleme takibi ve ağırlık güncelleme
 
 ## Çalışma tarzı
 - Her aşamaya başlamadan önce plan sun, onay bekle
 - Her modül için pytest testleri yazılır
+- Arayüz üç dillidir (tr / de / en): yeni UI metinleri sayfalara gömülmez,
+  `examprep/i18n.py` içine üç dilde eklenir (tests/test_i18n.py bunu denetler)
